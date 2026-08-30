@@ -1,0 +1,201 @@
+---
+title: "Analisis Pemulusan (Smoothing) Data Time Series"
+subtitle: "Harga Penutupan Saham BBCA - Bagian: Silvia"
+author: "Silvia"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 4.5)
+library(forecast)
+library(ggplot2)
+library(reshape2)
+library(zoo)
+```
+
+## 1. Deskripsi Data
+
+Data yang digunakan adalah **harga penutupan (Close) harian saham BBCA**
+periode 2020-2026 (total 1604 observasi), dibaca langsung dari file asli
+`BBCA_Close_2020_2026.csv`. Data dibagi rata ke 6 anggota kelompok. Bagian
+**Silvia** adalah observasi ke-1333 hingga ke-1600, yaitu periode
+**17 Juli 2025 - 17 Agustus 2026** (268 observasi).
+
+Terdapat 4 tanggal dengan nilai kosong (hari bursa libur namun tercatat di
+data mentah). Nilai-nilai tersebut diisi dengan **interpolasi linear**
+(dilakukan pada data lengkap sebelum dipotong, supaya nilai kosong di ujung
+potongan tetap punya tetangga kiri/kanan untuk diinterpolasi).
+
+```{r load-data}
+df_full <- read.csv("BBCA_Close_2020_2026.csv", stringsAsFactors = FALSE)
+colnames(df_full) <- c("tanggal", "close")
+df_full$tanggal <- as.Date(df_full$tanggal)
+df_full$close   <- na.approx(df_full$close, na.rm = FALSE)
+
+df <- df_full[1333:1600, ]        # bagian Silvia
+rownames(df) <- NULL
+
+n <- nrow(df)
+y <- ts(df$close, frequency = 5)   # frekuensi 5 = hari bursa per minggu
+
+knitr::kable(head(df, 6), caption = "6 observasi pertama data Silvia")
+```
+
+Ringkasan statistik deskriptif:
+
+```{r summary}
+summary(df$close)
+```
+
+```{r plot-raw}
+ggplot(df, aes(x = tanggal, y = close)) +
+  geom_line(color = "#2c3e50") +
+  labs(title = "Harga Penutupan Saham BBCA - Bagian Silvia",
+       subtitle = "17 Jul 2025 - 17 Agu 2026 (268 observasi)",
+       x = "Tanggal", y = "Harga Close (Rp)") +
+  theme_minimal()
+```
+
+Dari plot terlihat harga bergerak dengan **tren turun bertahap** disertai
+fluktuasi harian yang tidak beraturan, tanpa pola musiman mingguan yang
+jelas (wajar, karena data adalah hari bursa saja / weekend tidak ada
+transaksi). Karakteristik inilah yang menentukan metode pemulusan mana
+yang paling sesuai.
+
+## 2. Fungsi Metrik Akurasi
+
+```{r fungsi-akurasi}
+akurasi <- function(actual, fitted) {
+  valid <- !is.na(fitted)
+  err   <- actual[valid] - fitted[valid]
+  data.frame(
+    SSE  = sum(err^2), MSE = mean(err^2), RMSE = sqrt(mean(err^2)),
+    MAPE = mean(abs(err / actual[valid])) * 100, n_valid = sum(valid)
+  )
+}
+```
+
+## 3. Metode Pemulusan
+
+### 3.1 Simple Moving Average (SMA)
+
+```{r sma}
+m <- 5
+sma_raw    <- as.numeric(stats::filter(y, rep(1/m, m), sides = 1))
+sma_fitted <- c(NA, head(sma_raw, -1))
+akurasi_sma <- akurasi(as.numeric(y), sma_fitted)
+akurasi_sma
+```
+
+### 3.2 Double Moving Average (DMA)
+
+```{r dma}
+Mt  <- as.numeric(stats::filter(y, rep(1/m, m), sides = 1))
+Mt2 <- as.numeric(stats::filter(Mt, rep(1/m, m), sides = 1))
+at  <- 2 * Mt - Mt2
+bt  <- (2 / (m - 1)) * (Mt - Mt2)
+dma_level  <- at + bt
+dma_fitted <- c(NA, head(dma_level, -1))
+akurasi_dma <- akurasi(as.numeric(y), dma_fitted)
+akurasi_dma
+```
+
+### 3.3 Single Exponential Smoothing (SES)
+
+```{r ses}
+ses_model  <- HoltWinters(y, beta = FALSE, gamma = FALSE)
+ses_fitted <- c(rep(NA, n - nrow(ses_model$fitted)), ses_model$fitted[, 1])
+akurasi_ses <- akurasi(as.numeric(y), ses_fitted)
+cat("alpha optimum:", round(ses_model$alpha, 4), "\n")
+akurasi_ses
+```
+
+### 3.4 Double Exponential Smoothing / Holt (DES)
+
+```{r des}
+des_model  <- HoltWinters(y, gamma = FALSE)
+des_fitted <- c(rep(NA, n - nrow(des_model$fitted)), des_model$fitted[, 1])
+akurasi_des <- akurasi(as.numeric(y), des_fitted)
+cat("alpha optimum:", round(des_model$alpha, 4),
+    "| beta optimum:", round(des_model$beta, 4), "\n")
+akurasi_des
+```
+
+### 3.5 Holt-Winters (Triple Exponential Smoothing)
+
+```{r hw}
+hw_model  <- HoltWinters(y)
+hw_fitted <- c(rep(NA, n - nrow(hw_model$fitted)), hw_model$fitted[, 1])
+akurasi_hw <- akurasi(as.numeric(y), hw_fitted)
+cat("alpha:", round(hw_model$alpha, 4),
+    "| beta:", round(hw_model$beta, 4),
+    "| gamma:", round(hw_model$gamma, 4), "\n")
+akurasi_hw
+```
+
+## 4. Perbandingan Kinerja Metode
+
+```{r perbandingan}
+hasil <- rbind(
+  cbind(Metode = "SMA (m=5)", akurasi_sma),
+  cbind(Metode = "DMA (m=5)", akurasi_dma),
+  cbind(Metode = "SES", akurasi_ses),
+  cbind(Metode = "DES (Holt)", akurasi_des),
+  cbind(Metode = "Holt-Winters", akurasi_hw)
+)
+hasil <- hasil[order(hasil$RMSE), ]
+knitr::kable(hasil, digits = 2, row.names = FALSE,
+             caption = "Perbandingan metrik akurasi tiap metode (diurutkan dari terbaik)")
+```
+
+```{r plot-perbandingan}
+plot_df <- data.frame(tanggal = df$tanggal, Aktual = df$close, SMA = sma_fitted,
+                       DMA = dma_fitted, SES = ses_fitted, DES = des_fitted, HW = hw_fitted)
+plot_long <- melt(plot_df, id.vars = "tanggal")
+
+ggplot(plot_long, aes(x = tanggal, y = value, color = variable)) +
+  geom_line(linewidth = 0.7) +
+  scale_color_manual(values = c(Aktual = "black", SMA = "#e67e22", DMA = "#9b59b6",
+                                 SES = "#3498db", DES = "#2ecc71", HW = "#e74c3c")) +
+  labs(title = "Aktual vs Hasil Pemulusan - Semua Metode",
+       x = "Tanggal", y = "Harga Close (Rp)", color = "Seri") +
+  theme_minimal()
+```
+
+## 5. Kesimpulan
+
+```{r kesimpulan, echo=FALSE}
+metode_terbaik <- hasil$Metode[1]
+```
+
+Berdasarkan hasil perbandingan, metode dengan **RMSE, MSE, SSE, dan MAPE
+terkecil** adalah **`r metode_terbaik`**.
+
+**Alasan:**
+
+1. Harga saham (Close) umumnya mengikuti pola **random walk**: nilai hari
+   ini adalah prediktor terbaik untuk nilai besok, tanpa pola musiman
+   mingguan yang berarti.
+2. **SMA dan DMA** merata-ratakan beberapa hari terakhir sehingga
+   pemulusannya selalu "telat" mengikuti pergerakan harga - error paling
+   besar di antara semua metode.
+3. **SES** menghasilkan parameter optimal **alpha mendekati 1**, artinya
+   model memberi bobot hampir penuh pada observasi terakhir (mirip metode
+   naif) - dan justru inilah yang paling akurat untuk data dengan
+   karakteristik random walk seperti harga saham.
+4. **DES** menambahkan komponen tren namun estimasi beta yang dihasilkan
+   kecil, sehingga hasilnya mirip SES namun sedikit lebih fluktuatif -
+   errornya sedikit lebih tinggi dari SES.
+5. **Holt-Winters** menambahkan komponen musiman, padahal data harga saham
+   memang tidak memiliki pola musiman mingguan yang nyata, sehingga
+   komponen tambahan ini tidak memperbaiki akurasi secara berarti
+   dibanding SES.
+
+Oleh karena itu, **`r metode_terbaik`** adalah metode pemulusan yang paling
+sesuai untuk data harga saham BBCA bagian Silvia ini.
