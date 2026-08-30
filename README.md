@@ -1,2 +1,0 @@
-# mpdw
-praktikum mpdw 
