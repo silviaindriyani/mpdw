@@ -1,0 +1,368 @@
+---
+title: "Latihan Pertemuan 4 — Proses MA(2), AR(2), dan ARMA(2,2)"
+author: "Silvia Indriyani"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
+
+# Paket yang dibutuhkan
+# install.packages("TSA")
+# install.packages("tseries")
+# install.packages("forecast")
+
+library(TSA)      # untuk fungsi eacf()
+library(tseries)   # untuk uji stasioneritas ADF
+library(forecast)  # untuk plot ACF/PACF yang lebih rapi (opsional)
+
+set.seed(1234)  # agar hasil dapat direproduksi
+n <- 300        # banyak data yang dibangkitkan
+```
+
+Dokumen ini berisi pengerjaan latihan untuk tiga proses time series: **MA(2)**, **AR(2)**, dan **ARMA(2,2)**. Setiap proses dibangkitkan dengan dua cara (manual dan `arima.sim`), lalu dianalisis melalui plot time series, ACF, PACF, EACF, scatterplot lag, serta perbandingan autokorelasi empiris dan teoritis.
+
+---
+
+# Proses MA(2)
+
+Model: $Y_t = e_t + \theta_1 e_{t-1} + \theta_2 e_{t-2}$, dengan $\theta_1 = 0.4$ dan $\theta_2 = 0.6$.
+
+## Membangkitkan Data
+
+### Cara Manual
+
+```{r ma2-manual}
+theta1_ma <- 0.4
+theta2_ma <- 0.6
+
+# bangkitkan error/white noise sebanyak n+2 (2 tambahan untuk nilai awal e_{t-1}, e_{t-2})
+e_ma <- rnorm(n + 2)
+
+y_ma2_manual <- numeric(n)
+for (t in 1:n) {
+  # e[t+2] = e_t ; e[t+1] = e_{t-1} ; e[t] = e_{t-2}
+  y_ma2_manual[t] <- e_ma[t + 2] + theta1_ma * e_ma[t + 1] + theta2_ma * e_ma[t]
+}
+y_ma2_manual <- ts(y_ma2_manual)
+head(y_ma2_manual)
+```
+
+### Menggunakan `arima.sim`
+
+```{r ma2-sim}
+y_ma2_sim <- arima.sim(model = list(ma = c(theta1_ma, theta2_ma)), n = n)
+head(y_ma2_sim)
+```
+
+## Plot Time Series, ACF, PACF, dan EACF
+
+```{r ma2-plots}
+par(mfrow = c(2, 1))
+ts.plot(y_ma2_manual, main = "Plot Time Series MA(2) - Manual", ylab = "Yt")
+ts.plot(y_ma2_sim, main = "Plot Time Series MA(2) - arima.sim", ylab = "Yt")
+par(mfrow = c(1, 1))
+```
+
+```{r ma2-acf-pacf}
+par(mfrow = c(2, 2))
+acf(y_ma2_manual, main = "ACF MA(2) - Manual")
+pacf(y_ma2_manual, main = "PACF MA(2) - Manual")
+acf(y_ma2_sim, main = "ACF MA(2) - arima.sim")
+pacf(y_ma2_sim, main = "PACF MA(2) - arima.sim")
+par(mfrow = c(1, 1))
+```
+
+```{r ma2-eacf}
+cat("EACF data manual:\n")
+eacf(y_ma2_manual)
+
+cat("\nEACF data arima.sim:\n")
+eacf(y_ma2_sim)
+```
+
+**Identifikasi kestasioneran:**
+
+```{r ma2-adf}
+adf.test(y_ma2_manual)
+adf.test(y_ma2_sim)
+```
+
+> Proses MA berorde berapapun (dengan koefisien konstan) selalu **stasioner**, karena tidak melibatkan nilai $Y$ periode sebelumnya (tidak ada akar AR yang perlu dicek). Plot time series terlihat berfluktuasi di sekitar rata-rata konstan, dan uji ADF (jika p-value < 0.05) mengonfirmasi data stasioner. Pola ACF terpotong (*cuts off*) setelah lag 2, sesuai teori MA(2), sedangkan PACF meluruh (*tails off*).
+
+## Scatterplot $Y_t$ vs $Y_{t-1}$, $Y_{t-2}$, $Y_{t-3}$
+
+```{r ma2-scatter}
+y <- as.numeric(y_ma2_manual)
+Yt   <- y[4:n]
+Yt_1 <- y[3:(n-1)]
+Yt_2 <- y[2:(n-2)]
+Yt_3 <- y[1:(n-3)]
+
+par(mfrow = c(1, 3))
+plot(Yt_1, Yt, main = "Yt vs Yt-1", xlab = "Yt-1", ylab = "Yt")
+plot(Yt_2, Yt, main = "Yt vs Yt-2", xlab = "Yt-2", ylab = "Yt")
+plot(Yt_3, Yt, main = "Yt vs Yt-3", xlab = "Yt-3", ylab = "Yt")
+par(mfrow = c(1, 1))
+```
+
+## Autokorelasi: Empiris vs Teoritis
+
+```{r ma2-acf-compare}
+# Autokorelasi empiris (dari data bangkitan manual)
+acf_empiris_ma <- acf(y_ma2_manual, plot = FALSE, lag.max = 5)$acf
+cat("Autokorelasi empiris (lag 0-5):\n")
+print(round(acf_empiris_ma, 4))
+
+# Autokorelasi teoritis menggunakan ARMAacf
+acf_teoritis_ma <- ARMAacf(ma = c(theta1_ma, theta2_ma), lag.max = 5)
+cat("\nAutokorelasi teoritis (lag 0-5):\n")
+print(round(acf_teoritis_ma, 4))
+
+# Perhitungan manual rumus teoritis MA(2):
+# rho1 = (theta1 + theta1*theta2) / (1 + theta1^2 + theta2^2)
+# rho2 = theta2 / (1 + theta1^2 + theta2^2)
+rho1_manual <- (theta1_ma + theta1_ma * theta2_ma) / (1 + theta1_ma^2 + theta2_ma^2)
+rho2_manual <- theta2_ma / (1 + theta1_ma^2 + theta2_ma^2)
+cat("\nRumus manual: rho1 =", round(rho1_manual, 4), " | rho2 =", round(rho2_manual, 4), "\n")
+```
+
+> Secara teori, untuk MA(2) autokorelasi bernilai nol untuk lag > 2. Nilai empiris umumnya mendekati nilai teoritis meskipun tidak identik karena adanya galat sampling (data yang dibangkitkan bersifat acak).
+
+---
+
+# Proses AR(2)
+
+Model: $Y_t = \phi_1 Y_{t-1} + \phi_2 Y_{t-2} + e_t$, dengan $\phi_1 = 0.5$ dan $\phi_2 = 0.2$.
+
+## Membangkitkan Data
+
+### Cara Manual
+
+```{r ar2-manual}
+phi1_ar <- 0.5
+phi2_ar <- 0.2
+burn_in <- 100  # periode pembuangan awal agar proses mencapai kondisi stasioner
+
+n_total <- n + burn_in
+e_ar <- rnorm(n_total)
+y_full <- numeric(n_total)
+y_full[1] <- e_ar[1]
+y_full[2] <- e_ar[2]
+
+for (t in 3:n_total) {
+  y_full[t] <- phi1_ar * y_full[t - 1] + phi2_ar * y_full[t - 2] + e_ar[t]
+}
+
+y_ar2_manual <- ts(y_full[(burn_in + 1):n_total])
+head(y_ar2_manual)
+```
+
+### Menggunakan `arima.sim`
+
+```{r ar2-sim}
+y_ar2_sim <- arima.sim(model = list(ar = c(phi1_ar, phi2_ar)), n = n)
+head(y_ar2_sim)
+```
+
+## Plot Time Series, ACF, PACF, dan EACF
+
+```{r ar2-plots}
+par(mfrow = c(2, 1))
+ts.plot(y_ar2_manual, main = "Plot Time Series AR(2) - Manual", ylab = "Yt")
+ts.plot(y_ar2_sim, main = "Plot Time Series AR(2) - arima.sim", ylab = "Yt")
+par(mfrow = c(1, 1))
+```
+
+```{r ar2-acf-pacf}
+par(mfrow = c(2, 2))
+acf(y_ar2_manual, main = "ACF AR(2) - Manual")
+pacf(y_ar2_manual, main = "PACF AR(2) - Manual")
+acf(y_ar2_sim, main = "ACF AR(2) - arima.sim")
+pacf(y_ar2_sim, main = "PACF AR(2) - arima.sim")
+par(mfrow = c(1, 1))
+```
+
+```{r ar2-eacf}
+cat("EACF data manual:\n")
+eacf(y_ar2_manual)
+
+cat("\nEACF data arima.sim:\n")
+eacf(y_ar2_sim)
+```
+
+**Identifikasi kestasioneran:**
+
+```{r ar2-adf}
+# Uji akar-akar karakteristik: 1 - phi1*B - phi2*B^2 = 0
+akar <- polyroot(c(1, -phi1_ar, -phi2_ar))
+cat("Akar-akar persamaan karakteristik:\n")
+print(akar)
+cat("Modulus akar:", Mod(akar), "\n")
+cat("Stasioner jika semua modulus akar > 1:", all(Mod(akar) > 1), "\n\n")
+
+adf.test(y_ar2_manual)
+adf.test(y_ar2_sim)
+```
+
+> Dengan $\phi_1 = 0.5$ dan $\phi_2 = 0.2$, syarat kestasioneran AR(2) terpenuhi ($\phi_1+\phi_2<1$, $\phi_2-\phi_1<1$, $|\phi_2|<1$), sehingga proses ini **stasioner**. Hal ini didukung oleh modulus akar karakteristik yang seluruhnya lebih dari 1, plot time series yang berfluktuasi di sekitar rata-rata konstan, serta uji ADF. Pola ACF meluruh (*tails off*) secara eksponensial/sinusoidal, sedangkan PACF terpotong (*cuts off*) setelah lag 2, sesuai teori AR(2).
+
+## Scatterplot $Y_t$ vs $Y_{t-1}$, $Y_{t-2}$, $Y_{t-3}$
+
+```{r ar2-scatter}
+y2 <- as.numeric(y_ar2_manual)
+Yt   <- y2[4:n]
+Yt_1 <- y2[3:(n-1)]
+Yt_2 <- y2[2:(n-2)]
+Yt_3 <- y2[1:(n-3)]
+
+par(mfrow = c(1, 3))
+plot(Yt_1, Yt, main = "Yt vs Yt-1", xlab = "Yt-1", ylab = "Yt")
+plot(Yt_2, Yt, main = "Yt vs Yt-2", xlab = "Yt-2", ylab = "Yt")
+plot(Yt_3, Yt, main = "Yt vs Yt-3", xlab = "Yt-3", ylab = "Yt")
+par(mfrow = c(1, 1))
+```
+
+## Autokorelasi: Empiris vs Teoritis
+
+```{r ar2-acf-compare}
+acf_empiris_ar <- acf(y_ar2_manual, plot = FALSE, lag.max = 5)$acf
+cat("Autokorelasi empiris (lag 0-5):\n")
+print(round(acf_empiris_ar, 4))
+
+acf_teoritis_ar <- ARMAacf(ar = c(phi1_ar, phi2_ar), lag.max = 5)
+cat("\nAutokorelasi teoritis (lag 0-5):\n")
+print(round(acf_teoritis_ar, 4))
+```
+
+> Autokorelasi teoritis AR(2) mengikuti persamaan Yule-Walker: $\rho_k = \phi_1 \rho_{k-1} + \phi_2 \rho_{k-2}$ dan meluruh secara bertahap menuju nol, bukan terpotong tiba-tiba seperti pada MA. Nilai empiris mendekati pola teoritis tersebut.
+
+---
+
+# Proses ARMA(2,2)
+
+Model: $Y_t = \phi_1 Y_{t-1} + \phi_2 Y_{t-2} + e_t + \theta_1 e_{t-1} + \theta_2 e_{t-2}$, dengan $\phi_1 = 0.5$, $\phi_2 = 0.2$, $\theta_1 = 0.4$, $\theta_2 = 0.6$.
+
+## Membangkitkan Data
+
+### Cara Manual
+
+```{r arma22-manual}
+phi1_arma <- 0.5
+phi2_arma <- 0.2
+theta1_arma <- 0.4
+theta2_arma <- 0.6
+
+burn_in2 <- 100
+n_total2 <- n + burn_in2
+e_arma <- rnorm(n_total2)
+y_arma_full <- numeric(n_total2)
+
+# nilai awal
+y_arma_full[1] <- e_arma[1]
+y_arma_full[2] <- e_arma[2] + theta1_arma * e_arma[1]
+
+for (t in 3:n_total2) {
+  y_arma_full[t] <- phi1_arma * y_arma_full[t - 1] + phi2_arma * y_arma_full[t - 2] +
+    e_arma[t] + theta1_arma * e_arma[t - 1] + theta2_arma * e_arma[t - 2]
+}
+
+y_arma22_manual <- ts(y_arma_full[(burn_in2 + 1):n_total2])
+head(y_arma22_manual)
+```
+
+### Menggunakan `arima.sim`
+
+```{r arma22-sim}
+y_arma22_sim <- arima.sim(
+  model = list(ar = c(phi1_arma, phi2_arma), ma = c(theta1_arma, theta2_arma)),
+  n = n
+)
+head(y_arma22_sim)
+```
+
+## Plot Time Series, ACF, PACF, dan EACF
+
+```{r arma22-plots}
+par(mfrow = c(2, 1))
+ts.plot(y_arma22_manual, main = "Plot Time Series ARMA(2,2) - Manual", ylab = "Yt")
+ts.plot(y_arma22_sim, main = "Plot Time Series ARMA(2,2) - arima.sim", ylab = "Yt")
+par(mfrow = c(1, 1))
+```
+
+```{r arma22-acf-pacf}
+par(mfrow = c(2, 2))
+acf(y_arma22_manual, main = "ACF ARMA(2,2) - Manual")
+pacf(y_arma22_manual, main = "PACF ARMA(2,2) - Manual")
+acf(y_arma22_sim, main = "ACF ARMA(2,2) - arima.sim")
+pacf(y_arma22_sim, main = "PACF ARMA(2,2) - arima.sim")
+par(mfrow = c(1, 1))
+```
+
+```{r arma22-eacf}
+cat("EACF data manual:\n")
+eacf(y_arma22_manual)
+
+cat("\nEACF data arima.sim:\n")
+eacf(y_arma22_sim)
+```
+
+**Identifikasi kestasioneran:**
+
+```{r arma22-adf}
+akar_arma <- polyroot(c(1, -phi1_arma, -phi2_arma))
+cat("Modulus akar komponen AR:", Mod(akar_arma), "\n")
+cat("Stasioner jika semua modulus akar > 1:", all(Mod(akar_arma) > 1), "\n\n")
+
+adf.test(y_arma22_manual)
+adf.test(y_arma22_sim)
+```
+
+> Karena komponen AR-nya sama dengan proses AR(2) sebelumnya (memenuhi syarat kestasioneran) dan komponen MA selalu stasioner, maka proses ARMA(2,2) ini **stasioner**. Pola ACF dan PACF sama-sama meluruh (*tails off*) — tidak terpotong tegas seperti pada proses AR atau MA murni — yang merupakan ciri khas proses campuran ARMA.
+
+## Scatterplot $Y_t$ vs $Y_{t-1}$, $Y_{t-2}$, $Y_{t-3}$
+
+```{r arma22-scatter}
+y3 <- as.numeric(y_arma22_manual)
+Yt   <- y3[4:n]
+Yt_1 <- y3[3:(n-1)]
+Yt_2 <- y3[2:(n-2)]
+Yt_3 <- y3[1:(n-3)]
+
+par(mfrow = c(1, 3))
+plot(Yt_1, Yt, main = "Yt vs Yt-1", xlab = "Yt-1", ylab = "Yt")
+plot(Yt_2, Yt, main = "Yt vs Yt-2", xlab = "Yt-2", ylab = "Yt")
+plot(Yt_3, Yt, main = "Yt vs Yt-3", xlab = "Yt-3", ylab = "Yt")
+par(mfrow = c(1, 1))
+```
+
+## Autokorelasi: Empiris vs Teoritis
+
+```{r arma22-acf-compare}
+acf_empiris_arma <- acf(y_arma22_manual, plot = FALSE, lag.max = 5)$acf
+cat("Autokorelasi empiris (lag 0-5):\n")
+print(round(acf_empiris_arma, 4))
+
+acf_teoritis_arma <- ARMAacf(ar = c(phi1_arma, phi2_arma), ma = c(theta1_arma, theta2_arma), lag.max = 5)
+cat("\nAutokorelasi teoritis (lag 0-5):\n")
+print(round(acf_teoritis_arma, 4))
+```
+
+> Pada proses ARMA, autokorelasi teoritis untuk lag-lag awal dipengaruhi oleh kombinasi komponen AR dan MA, kemudian pola peluruhannya mengikuti pola AR untuk lag yang lebih besar. Nilai empiris dari data bangkitan mendekati pola teoritis tersebut, dengan sedikit deviasi akibat variasi sampling acak.
+
+---
+
+# Kesimpulan
+
+| Proses | Kestasioneran | Pola ACF | Pola PACF |
+|---|---|---|---|
+| MA(2) | Selalu stasioner | Cuts off setelah lag 2 | Tails off |
+| AR(2) | Stasioner (memenuhi syarat $\phi_1+\phi_2<1$, dst.) | Tails off | Cuts off setelah lag 2 |
+| ARMA(2,2) | Stasioner (mengikuti syarat komponen AR) | Tails off | Tails off |
+
+Secara umum, autokorelasi empiris dari data yang dibangkitkan (baik secara manual maupun dengan `arima.sim`) mendekati nilai autokorelasi teoritisnya, dan perbedaan yang muncul disebabkan oleh sifat acak (random sampling) dari pembangkitan data.
