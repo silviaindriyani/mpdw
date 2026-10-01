@@ -1,0 +1,247 @@
+---
+title: "Pemodelan ARIMA Data Curah Hujan Harian"
+subtitle: "Praktikum MPDW"
+author: "Silvia Indriyani (X1004261007)"
+date: "1 Oktober 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 4)
+library(forecast); library(tseries); library(lmtest); library(MASS)
+```
+
+# Data
+
+Data berupa curah hujan harian (mm) dari 1 Januari 1969 sampai 31 Desember 1970 (**730 amatan**, memenuhi syarat minimal 500 amatan).
+
+```{r data}
+d <- read.csv("data_time_series_curah_hujan.csv")
+d$Tanggal <- as.Date(d$Tanggal)
+x <- d$Curah_Hujan_mm
+cat("Jumlah amatan:", length(x), "| NA:", sum(is.na(x)), "| Proporsi hari tanpa hujan:", round(mean(x == 0), 3))
+summary(x)
+plot(d$Tanggal, x, type = "l", col = "steelblue", xlab = "Tanggal", ylab = "Curah hujan (mm)",
+     main = "Curah Hujan Harian")
+```
+
+# Tahap 1: Pembagian Data Train dan Test
+
+Plot menunjukkan tidak ada tren yang jelas dan pola relatif homogen sepanjang waktu, sehingga data dibagi **80% train (584 amatan)** dan **20% test (146 amatan)** secara berurutan.
+
+```{r split}
+n <- length(x); ntr <- floor(0.8 * n)
+train <- x[1:ntr]; test <- x[(ntr + 1):n]
+tgl_tr <- d$Tanggal[1:ntr]; tgl_te <- d$Tanggal[(ntr + 1):n]
+cat("Train:", ntr, "(", format(min(tgl_tr)), "s/d", format(max(tgl_tr)), ")\n")
+cat("Test :", length(test), "(", format(min(tgl_te)), "s/d", format(max(tgl_te)), ")")
+plot(d$Tanggal, x, type = "n", xlab = "Tanggal", ylab = "mm", main = "Pembagian Data")
+lines(tgl_tr, train, col = "steelblue"); lines(tgl_te, test, col = "tomato")
+legend("topright", c("Train", "Test"), col = c("steelblue", "tomato"), lty = 1, bty = "n")
+```
+
+# Tahap 2: Uji Stasioneritas Data Train
+
+## Stasioneritas dalam rataan
+
+```{r mean}
+plot(tgl_tr, train, type = "l", xlab = "Tanggal", ylab = "mm", main = "Plot Data Train")
+acf(train, lag.max = 40, main = "ACF Data Train")
+adf.test(train)
+kpss.test(train)
+```
+
+Uji ADF: H0 = data tidak stasioner. Jika p-value < 0.05 maka H0 ditolak (stasioner dalam rataan). Uji KPSS sebagai pembanding (H0 = stasioner).
+
+**Interpretasi:** ADF menghasilkan p-value 0.01 (< 0.05) sehingga H0 ditolak, dan KPSS (p > 0.05) tidak menolak H0. ACF turun cepat mendekati nol (tidak meluruh lambat). Jadi data train sudah **stasioner dalam rataan**, tidak perlu diferensiasi.
+
+## Stasioneritas dalam ragam (Box-Cox)
+
+Data memuat nilai 0 (hari tanpa hujan), padahal Box-Cox mensyaratkan data positif. Maka data digeser +1 (`y + 1`) sebelum Box-Cox.
+
+```{r boxcox}
+y1 <- train + 1
+bc <- boxcox(lm(y1 ~ 1), lambda = seq(-2, 2, 0.01), plotit = FALSE)
+lam <- bc$x[which.max(bc$y)]
+ci  <- range(bc$x[bc$y > max(bc$y) - qchisq(0.95, 1) / 2])
+plot(bc$x, bc$y, type = "l", xlab = expression(lambda), ylab = "log-likelihood", main = "Box-Cox (y + 1)")
+abline(v = c(lam, ci), lty = c(1, 2, 2), col = c("red", "blue", "blue")); abline(v = 1, col = "darkgreen")
+cat("Lambda optimum:", lam, "\nSelang kepercayaan 95%: [", ci[1], ",", ci[2], "]\nMengandung 1?", ci[1] <= 1 & 1 <= ci[2])
+```
+
+**Interpretasi:** lambda optimum = -0.36 dengan selang kepercayaan 95% [-0.43, -0.29]. Selang tidak memuat 1, maka data **belum stasioner dalam ragam** (ragam besar pada hari hujan ekstrem, maksimum 549 mm) dan perlu ditransformasi.
+
+# Tahap 3: Penanganan Ketidakstasioneran
+
+Selang kepercayaan lambda tidak memuat 1 berarti ragam tidak stasioner, sehingga data **ditransformasi**. Karena lambda mendekati nilai di bawah nol, dipakai transformasi Box-Cox dengan lambda optimum. Untuk rataan, diferensiasi hanya dilakukan jika ADF tidak menolak H0.
+
+```{r transform}
+lam_use <- lam
+tf  <- function(v) ((v + 1)^lam_use - 1) / lam_use
+itf <- function(z) (z * lam_use + 1)^(1 / lam_use) - 1
+ztr <- tf(train)
+plot(tgl_tr, ztr, type = "l", xlab = "Tanggal", ylab = "Box-Cox(y+1)", main = "Data Train Setelah Transformasi")
+adf.test(ztr)
+kpss.test(ztr)
+```
+
+```{r diff}
+p_adf <- adf.test(ztr)$p.value
+d_ord <- 0
+if (p_adf > 0.05) { d_ord <- 1; print(adf.test(diff(ztr))) }
+cat("Orde diferensiasi (d) yang digunakan:", d_ord)
+zs <- if (d_ord == 1) diff(ztr) else ztr
+```
+
+**Interpretasi:** setelah transformasi, data tetap stasioner dalam rataan (ADF p = 0.01, KPSS p > 0.05) sehingga d = 0.
+
+# Tahap 4: Identifikasi Model Potensial
+
+## ACF dan PACF
+
+```{r acfpacf}
+par(mfrow = c(1, 2)); acf(zs, lag.max = 30, main = "ACF"); pacf(zs, lag.max = 30, main = "PACF"); par(mfrow = c(1, 1))
+```
+
+## EACF
+
+Paket `TSA` tidak tersedia di semua lingkungan, sehingga fungsi EACF ditulis manual (algoritma Tsay & Tiao, sama dengan `TSA::eacf`). Simbol `o` berarti tidak signifikan dan `x` berarti signifikan.
+
+```{r eacf}
+eacf2 <- function(z, ar.max = 7, ma.max = 13) {
+  z <- z - mean(z); n <- length(z)
+  lag <- function(v, k) if (k == 0) v else c(rep(0, k), v[1:(length(v) - k)])
+  ee <- matrix(NA, ar.max + 1, ma.max + 1)
+  for (p in 0:ar.max) for (q in 0:ma.max) {
+    r <- z
+    if (p > 0) { X <- sapply(1:p, function(k) lag(z, k)); b <- coef(lm(z ~ X - 1)); r <- z - X %*% b }
+    r <- as.numeric(r)
+    if (q > 0) for (j in 1:q) {
+      Xr <- cbind(if (p > 0) X, sapply(1:j, function(k) lag(r, k)))
+      if (is.null(dim(Xr))) Xr <- matrix(Xr, ncol = 1)
+      b <- coef(lm(z ~ Xr - 1))
+      r <- as.numeric(z - Xr %*% b)
+    }
+    ee[p + 1, q + 1] <- acf(r, lag.max = q + 1, plot = FALSE)$acf[q + 2]
+  }
+  sym <- ifelse(abs(ee) > 2 / sqrt(n - outer(0:ar.max, 0:ma.max, "+")), "x", "o")
+  dimnames(sym) <- list(paste0("AR", 0:ar.max), paste0("MA", 0:ma.max))
+  noquote(sym)
+}
+eacf2(zs)
+```
+
+**Interpretasi:** ACF meluruh perlahan (masih di atas batas signifikansi sampai lag 12) dan PACF signifikan pada lag 1, 3, 4, dan 5 lalu terputus, yang mengarah ke komponen AR (hingga orde 5) atau model campuran ARMA. EACF menunjukkan segitiga `o` mulai dari AR1/MA0 pada baris AR1 dan seterusnya, dengan `x` hanya pada baris AR0 (dan satu pada AR2/MA4), sehingga ARMA(1,q) kecil menjadi kandidat utama. Kandidat: ARMA(1,0), (0,1), (1,1), (2,1), (1,2), AR(5), MA(5), AR(3), dan white noise sebagai pembanding.
+
+## Kandidat model
+
+Kandidat diambil dari pola ACF/PACF/EACF (termasuk model sederhana di sekitarnya), dengan orde `d` sesuai tahap 3.
+
+```{r cand}
+cand <- list(c(0,0,0), c(1,0,0), c(0,0,1), c(1,0,1), c(5,0,0), c(0,0,5), c(3,0,0), c(2,0,1), c(1,0,2))
+cand <- lapply(cand, function(o) c(o[1], d_ord, o[3]))
+fits <- list()
+for (o in cand) {
+  nm <- sprintf("ARIMA(%d,%d,%d)", o[1], o[2], o[3])
+  fits[[nm]] <- tryCatch(Arima(ztr, order = o, include.mean = (d_ord == 0), method = "ML"), error = function(e) NULL)
+}
+fits <- Filter(Negate(is.null), fits)
+```
+
+# Tahap 5: Signifikansi Parameter dan AIC
+
+```{r sig}
+sig_all <- function(f) { ct <- coeftest(f); all(ct[rownames(ct) != "intercept", 4] < 0.05) }
+tab <- data.frame(Model = names(fits),
+                  AIC = sapply(fits, AIC), BIC = sapply(fits, BIC),
+                  Semua_Signifikan = sapply(fits, sig_all), row.names = NULL)
+tab <- tab[order(tab$AIC), ]; tab
+for (nm in names(fits)) { cat("\n====", nm, "====\n"); print(coeftest(fits[[nm]])) }
+```
+
+```{r pilih}
+ok <- tab[tab$Semua_Signifikan, ]
+best_name <- if (nrow(ok) > 0) ok$Model[which.min(ok$AIC)] else tab$Model[1]
+best <- fits[[best_name]]
+cat("Model terpilih:", best_name, "(parameter signifikan dengan AIC terkecil)")
+```
+
+**Interpretasi:** ARIMA(5,0,0) memiliki AIC terkecil (1385.5) tetapi ar2 dan ar3 tidak signifikan. Di antara model yang seluruh parameternya signifikan, **ARIMA(1,0,2)** punya AIC terkecil (1389.4) dan BIC terkecil di antara seluruh kandidat (1411.2), sehingga dipilih.
+
+# Tahap 6: Analisis Sisaan
+
+```{r resid}
+checkresiduals(best, plot = FALSE)
+r <- as.numeric(residuals(best))
+par(mfrow = c(2, 2))
+qqnorm(r); qqline(r, col = "red")
+plot(r, type = "h", main = "Sisaan vs Urutan", ylab = "residual"); abline(h = 0, col = "red")
+acf(r, main = "ACF Sisaan"); pacf(r, main = "PACF Sisaan")
+par(mfrow = c(1, 1))
+```
+
+```{r uji}
+cat("Uji Normalitas (Jarque-Bera & Kolmogorov-Smirnov), H0: sisaan normal\n")
+print(jarque.bera.test(r)); print(ks.test(scale(r), "pnorm"))
+cat("\nUji Autokorelasi (Ljung-Box), H0: tidak ada autokorelasi\n")
+print(Box.test(r, lag = 20, type = "Ljung-Box", fitdf = length(coef(best)) - (d_ord == 0)))
+cat("\nUji Homogenitas Ragam (Ljung-Box pada sisaan kuadrat / efek ARCH), H0: ragam homogen\n")
+print(Box.test(r^2, lag = 20, type = "Ljung-Box"))
+cat("\nUji Nilai Tengah Sisaan (t-test), H0: rataan = 0\n")
+print(t.test(r, mu = 0))
+```
+
+**Interpretasi:** (1) Rataan sisaan = 0 (p = 0.91): terpenuhi. (2) Tidak ada autokorelasi (Ljung-Box p = 0.136 > 0.05): terpenuhi. (3) Sisaan **tidak normal** (Jarque-Bera dan KS p < 0.05), akibat hari hujan ekstrem; hal ini wajar untuk data curah hujan dan tidak mengubah kelayakan estimasi titik. (4) Ragam sisaan **tidak homogen** (Ljung-Box pada sisaan kuadrat p = 0.029 < 0.05, indikasi efek ARCH), sehingga selang prediksi perlu ditafsirkan hati-hati; model GARCH dapat dipertimbangkan sebagai pengembangan.
+
+# Tahap 7: Overfitting
+
+Model terpilih dinaikkan ordenya satu tingkat pada AR dan MA, lalu dibandingkan AIC dan signifikansi parameter tambahan.
+
+```{r over}
+o <- arimaorder(best); p0 <- o[1]; q0 <- o[3]
+ov <- list(c(p0 + 1, d_ord, q0), c(p0, d_ord, q0 + 1))
+ovfit <- list(); ovfit[[best_name]] <- best
+for (oo in ov) { nm <- sprintf("ARIMA(%d,%d,%d)", oo[1], oo[2], oo[3])
+  ovfit[[nm]] <- tryCatch(Arima(ztr, order = oo, include.mean = (d_ord == 0), method = "ML"), error = function(e) NULL) }
+ovfit <- Filter(Negate(is.null), ovfit)
+data.frame(Model = names(ovfit), AIC = sapply(ovfit, AIC), Semua_Signifikan = sapply(ovfit, sig_all), row.names = NULL)
+for (nm in names(ovfit)[-1]) { cat("\n====", nm, "====\n"); print(coeftest(ovfit[[nm]])) }
+```
+
+**Interpretasi:** pada ARIMA(2,0,2) parameter ar2 tidak signifikan, dan pada ARIMA(1,0,3) parameter ma3 tidak signifikan (p = 0.104). Selisih AIC dengan model awal sangat kecil (< 1), jadi penambahan parameter tidak memberi perbaikan berarti. **ARIMA(1,0,2) tetap dipakai**.
+
+# Tahap 8: Peramalan
+
+Peramalan dilakukan pada skala transformasi untuk 146 hari data test, kemudian dikembalikan ke skala asli (mm) dengan transformasi balik.
+
+```{r fc}
+h <- length(test)
+fc <- forecast(best, h = h)
+pred <- pmax(itf(as.numeric(fc$mean)), 0)
+lo <- pmax(itf(as.numeric(fc$lower[, 2])), 0); hi <- itf(as.numeric(fc$upper[, 2]))
+plot(tgl_te, test, type = "l", col = "black", ylim = c(0, max(test, na.rm = TRUE)),
+     xlab = "Tanggal", ylab = "mm", main = paste("Peramalan", best_name, "vs Data Test"))
+lines(tgl_te, pred, col = "red", lwd = 2)
+legend("topright", c("Aktual (test)", "Ramalan"), col = c("black", "red"), lty = 1, bty = "n")
+rmse <- sqrt(mean((test - pred)^2)); mae <- mean(abs(test - pred))
+rmse_naif <- sqrt(mean((test - mean(train))^2)); mae_naif <- mean(abs(test - mean(train)))
+data.frame(Ukuran = c("RMSE", "MAE"), ARIMA = round(c(rmse, mae), 3),
+           Pembanding_rataan_train = round(c(rmse_naif, mae_naif), 3))
+head(data.frame(Tanggal = tgl_te, Aktual = test, Ramalan = round(pred, 2)), 10)
+```
+
+**Interpretasi:** ramalan cepat mendatar ke nilai rata-rata karena ingatan model pendek (ar1 = 0.93 diimbangi ma1 = -0.66 dan ma2 = -0.16). MAE ARIMA (9.28 mm) lebih kecil dibanding pembanding rataan train (12.34 mm), namun RMSE sedikit lebih besar (20.58 vs 19.08) karena ramalan tidak menangkap hari hujan ekstrem. Ramalan jangka panjang pada data harian ini memang terbatas.
+
+# Kesimpulan
+
+1. Data: 730 amatan harian, dibagi 584 train dan 146 test (80:20).
+2. Data train stasioner dalam rataan (ADF p = 0.01) tetapi tidak stasioner dalam ragam (selang lambda [-0.43, -0.29] tidak memuat 1), sehingga ditransformasi Box-Cox (lambda = -0.36) pada `y + 1`, tanpa diferensiasi (d = 0).
+3. Model terbaik: **ARIMA(1,0,2)** (seluruh parameter signifikan, AIC = 1389.4); overfitting ARIMA(2,0,2) dan ARIMA(1,0,3) tidak memperbaiki model.
+4. Sisaan: rataan nol dan tidak berautokorelasi, tetapi tidak normal dan ragamnya tidak homogen (indikasi efek ARCH).
+5. Peramalan 146 hari: MAE = 9.28 mm, RMSE = 20.58 mm. Kemampuan ARIMA terbatas karena data curah hujan harian bersifat sangat acak dan penuh nilai nol.
